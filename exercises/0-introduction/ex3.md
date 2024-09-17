@@ -1,3 +1,8 @@
+Solution 3
+==========
+
+> Que se passe-t-il dans RR version "exactement une fois" si le client tombe en panne temporairement avant d'avoir reçu une réponse ? Quelle solution proposer ?
+
 En cas de panne du client:
 
 - Lorsqu'il revient, s'il veut envoyer un nouveau message (potentiellement indépendant du précédent), celui-ci sera ignoré par le serveur
