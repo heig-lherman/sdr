@@ -61,18 +61,11 @@ func (tcp *TCP) newConnectionHandler(addr Address, conn net.Conn) *connectionHan
 }
 
 func (ch *connectionHandler) Send(msg destinedMessage) error {
-	res, err := ch.rr.SendRequest(msg.payload)
+	_, err := ch.rr.SendRequest(msg.payload)
 	if err != nil {
 		return err
 	}
 
-	ack := &ReadAckMessage{Payload: res}
-	ackBytes, err := ack.encode()
-	if err != nil {
-		return err
-	}
-
-	ch.tcp.readAcknowledgements <- Message{Source: ch.addr, Payload: ackBytes}
 	return nil
 }
 

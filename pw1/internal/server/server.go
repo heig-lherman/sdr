@@ -80,9 +80,6 @@ func newServer(ioStream ioUtils.IOStream, log *logging.Logger, debug bool, selfA
 	}
 
 	networkInterface.RegisterHandler(&server)
-	if printReadAck {
-		networkInterface.RegisterHandler(NewReadAckHandler(ioStream, log))
-	}
 
 	return &server
 }
@@ -200,6 +197,10 @@ func (s *Server) broadcast(from Username, text string) {
 		if err != nil {
 			s.logger.Errorf("Error sending message to %v: %s", addr, err)
 			continue
+		}
+
+		if s.printReadAck {
+			s.ioStream.Println(fmt.Sprintf("[%v received: %s]", addr, text))
 		}
 	}
 }

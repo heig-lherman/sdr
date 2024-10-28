@@ -19,16 +19,20 @@ type TCP struct {
 	uidGenerator utils.UIDGenerator
 	local        Address
 
-	sendRequests              chan destinedMessage
-	receivedMessages          chan Message
-	readAcknowledgements      chan Message
-	handlerRegistrations      chan handlerRegistration
-	handlerUnregistrations    chan HandlerId
+	sendRequests chan destinedMessage
+
+	receivedMessages chan Message
+
+	handlerRegistrations   chan handlerRegistration
+	handlerUnregistrations chan HandlerId
+
+	getConnections            chan getConnection
 	connectionRegistrations   chan connectionRegistration
 	connectionUnregistrations chan Address
 
-	closeChan    chan struct{}
-	closeConfirm chan struct{}
+	closeChan          chan struct{}
+	connCloseConfirm   chan struct{}
+	listenCloseConfirm chan struct{}
 }
 
 // NewTCP constructs and returns a new [TCP] instance capable of sending messages to a fixed set of neighbors.
@@ -48,17 +52,32 @@ func NewTCP(
 		local:                     self,
 		sendRequests:              make(chan destinedMessage),
 		receivedMessages:          make(chan Message),
-		readAcknowledgements:      make(chan Message),
 		handlerRegistrations:      make(chan handlerRegistration),
 		handlerUnregistrations:    make(chan HandlerId),
+		getConnections:            make(chan getConnection),
 		connectionRegistrations:   make(chan connectionRegistration),
 		connectionUnregistrations: make(chan Address),
 		closeChan:                 make(chan struct{}),
-		closeConfirm:              make(chan struct{}),
+		connCloseConfirm:          make(chan struct{}),
+		listenCloseConfirm:        make(chan struct{}),
 	}
 
+	// start listening for incoming connections
 	go tcp.listenIncomingConnections()
-	go tcp.handleState(neighbors)
+
+	// connect to neighbors and wait for them to connect
+	done := make(chan struct{})
+	go tcp.connectNeighbors(neighbors, done)
+
+	// state handlers
+	go tcp.handleHandlers()
+	go tcp.handleConnections()
+
+	// handle send requests once we know the connection pool is ready
+	go func() {
+		<-done
+		tcp.handleSendRequests()
+	}()
 
 	return &tcp
 }
@@ -94,6 +113,8 @@ func (tcp *TCP) UnregisterHandler(id transport.HandlerId) {
 }
 
 func (tcp *TCP) Close() {
+	tcp.logger.Warn("Closing TCP instance")
 	close(tcp.closeChan)
-	<-tcp.closeConfirm
+	<-tcp.connCloseConfirm
+	<-tcp.listenCloseConfirm
 }
