@@ -2,3 +2,5 @@
 
 - [Exercises](exercises/)
 - [Practical Work 1 - Fault Resilience](pw1/)
+- [Practical Work 2 - Total Order](pw2/)
+
