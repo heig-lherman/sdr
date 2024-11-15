@@ -1,0 +1,8 @@
+{
+    "Debug": true,
+    "LogPath": "logs/",
+    "Neighbors": ["127.0.0.1:5000"],
+    "PrintReadAck": true,
+    "Username": "Bob",
+    "SlowdownMs": 0
+}
