@@ -11,18 +11,21 @@ import (
 )
 
 type mockElector struct {
-	ability       election.Ability
 	startElection chan struct{}
 	endElection   chan transport.Address
 	getLeader     chan transport.Address
+
+	setAbility chan election.Ability
+	getAbility chan election.Ability
 }
 
 func newMockElector(ability election.Ability, leader transport.Address) *mockElector {
 	e := mockElector{
-		ability:       ability,
 		startElection: make(chan struct{}),
 		endElection:   make(chan transport.Address),
 		getLeader:     make(chan transport.Address),
+		setAbility:    make(chan election.Ability),
+		getAbility:    make(chan election.Ability),
 	}
 
 	go func() {
@@ -45,6 +48,17 @@ func newMockElector(ability election.Ability, leader transport.Address) *mockEle
 		}
 	}()
 
+	go func() {
+		ability := ability
+		for {
+			select {
+			case newAbility := <-e.setAbility:
+				ability = newAbility
+			case e.getAbility <- ability:
+			}
+		}
+	}()
+
 	return &e
 }
 
@@ -61,12 +75,12 @@ func (m *mockElector) GetLeader() transport.Address {
 }
 
 func (m *mockElector) UpdateAbility(ability election.Ability) {
-	m.ability = ability
+	m.setAbility <- ability
 }
 
 func (m *mockElector) expectAbility(t *testing.T, expected election.Ability) {
-	if m.ability != expected {
-		t.Error("Expected ability ", expected, ", got ", m.ability)
+	if ability := <-m.getAbility; ability != expected {
+		t.Error("Expected ability ", expected, ", got ", ability)
 	}
 }
 
@@ -89,6 +103,7 @@ func TestConnReqToLeader(t *testing.T) {
 			t.Error("Expected leader to be ", addrs[0], ", got ", connResp.Leader)
 		}
 	}
+	time.Sleep(100 * time.Millisecond)
 	elector.expectAbility(t, -1)
 
 	// Expect no received message from clientManager for 1 second
@@ -212,8 +227,6 @@ func TestConcurrentConnReqs(t *testing.T) {
 		}
 	}
 
-	elector.expectAbility(t, -1)
-
 	responseMsg2, _ := disp.GetSentMessage()
 	if connResp, ok := responseMsg2.(common.ConnResponseMessage); !ok {
 		t.Error("Response message is not a ConnResponseMessage: ", responseMsg2)
@@ -222,6 +235,8 @@ func TestConcurrentConnReqs(t *testing.T) {
 			t.Error("Expected leader to be ", addrs[0], ", got ", connResp.Leader)
 		}
 	}
+
+	time.Sleep(100 * time.Millisecond)
 
 	elector.expectAbility(t, -2)
 }

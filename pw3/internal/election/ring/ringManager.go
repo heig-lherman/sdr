@@ -5,6 +5,7 @@ import (
 	"chatsapp/internal/server/dispatcher"
 	"chatsapp/internal/timestamps"
 	"chatsapp/internal/transport"
+	"chatsapp/internal/utils"
 	goring "container/ring"
 	"encoding/gob"
 	"fmt"
@@ -75,12 +76,16 @@ type ringMaintainer struct {
 	ring    []address
 	timeout time.Duration
 
+	// State interactions
 	sendMsg chan dispatcher.Message
 	waitMsg chan chan<- dispatcher.Message
 
+	// Incoming messages by type
 	incAck     chan incomingMessage
 	incPayload chan incomingMessage
-	outMsg     chan outgoingMessage
+
+	// Outgoing requests
+	outMsg *utils.BufferedChan[outgoingMessage]
 }
 
 /*
@@ -119,7 +124,7 @@ func newRingMaintainer(
 		waitMsg:    make(chan chan<- dispatcher.Message),
 		incAck:     make(chan incomingMessage),
 		incPayload: make(chan incomingMessage),
-		outMsg:     make(chan outgoingMessage),
+		outMsg:     utils.NewBufferedChan[outgoingMessage](),
 	}
 
 	disp.Register(message{}, rm.handleIncomingMessage)
@@ -131,7 +136,7 @@ func newRingMaintainer(
 
 // SendToNext sends a message to the next correct node in the ring, in a non-blocking manner.
 func (rm *ringMaintainer) SendToNext(msg dispatcher.Message) {
-	go func() { rm.sendMsg <- msg }()
+	rm.sendMsg <- msg
 }
 
 // ReceiveFromPrev blocks until a message is received from the previous correct node in the ring.
@@ -167,20 +172,20 @@ func (rm *ringMaintainer) handleState() {
 		r = r.Next()
 	}
 
+	// We locate the current address so that we will always end the loop at ourselves.
+	for r.Value.(address) != rm.self {
+		r = r.Next()
+	}
+
 	ts := timestamps.NewLamportTimestampHandler(timestamps.Pid(rm.self.String()), 0)
 
 	for {
 		select {
 		case msg := <-rm.sendMsg:
 			rmMsg := message{payloadType, ts.IncrementTimestamp(), msg}
-			// We locate the current address so that we will always end the loop at ourselves.
-			for r.Value.(address) != rm.self {
-				r = r.Next()
-			}
-			go func() { rm.outMsg <- outgoingMessage{rmMsg, *r.Next()} }()
+			rm.outMsg.Inlet() <- outgoingMessage{rmMsg, *r.Next()}
 
 		case res := <-rm.waitMsg:
-			// TODO ask if we should handle messages as they come without necessarily having a call to ReceivePrev
 			rm.log.Info("Waiting for message from previous node...")
 			go func() {
 				msg := <-rm.incPayload
@@ -197,8 +202,7 @@ func (rm *ringMaintainer) handleState() {
 func (rm *ringMaintainer) processSends() {
 	for {
 		select {
-		case msg := <-rm.outMsg:
-			// TODO ask should we be able to have concurrent sends with ack identifications using timestamps?
+		case msg := <-rm.outMsg.Outlet():
 			rm.processSend(msg.msg, msg.ring)
 		}
 	}

@@ -5,6 +5,8 @@ import (
 	"chatsapp/internal/logging"
 	"chatsapp/internal/server/dispatcher"
 	"chatsapp/internal/transport"
+	"chatsapp/internal/utils"
+	"chatsapp/internal/utils/option"
 )
 
 type Ability = int
@@ -34,7 +36,7 @@ type crElector struct {
 	ring ring.RingMaintainer
 
 	getLeader  chan chan<- address
-	newAbility chan newAbilityRequest
+	newAbility *utils.BufferedChan[newAbilityRequest]
 
 	incAnnouncement chan announcementMessage
 	incResult       chan resultMessage
@@ -86,7 +88,7 @@ func newCRElector(
 		self:            self,
 		ring:            ring,
 		getLeader:       make(chan chan<- address),
-		newAbility:      make(chan newAbilityRequest),
+		newAbility:      utils.NewBufferedChan[newAbilityRequest](),
 		incAnnouncement: make(chan announcementMessage),
 		incResult:       make(chan resultMessage),
 	}
@@ -107,7 +109,7 @@ func (cre *crElector) GetLeader() address {
 // UpdateAbility updates the ability of this process, and starts a new election.
 func (cre *crElector) UpdateAbility(ability Ability) {
 	wait := make(chan struct{})
-	cre.newAbility <- newAbilityRequest{ability, wait}
+	cre.newAbility.Inlet() <- newAbilityRequest{ability, wait}
 	<-wait
 }
 
@@ -130,13 +132,12 @@ func (cre *crElector) handleRingMessages() {
 // processElections is the main goroutine of the elector, it manages the inner state
 // and handles incoming requests from the application-facing API and the ring
 func (cre *crElector) processElections() {
-	leader := new(address)
+	leader := option.None[address]()
 	ability := 0
 	inElection := false
 
 	electionWaiters := make([]func(leader address), 0)
 
-	// TODO ask if alright to do closures, or should do state struct with methods
 	// Define some helpful closures for the election process
 	startElection := func() {
 		inElection = true
@@ -146,12 +147,12 @@ func (cre *crElector) processElections() {
 
 	endElection := func() {
 		inElection = false
-		cre.log.Infof("Election completed. Leader is now %v with %d waiters to notify", *leader, len(electionWaiters))
+		cre.log.Infof("Election completed. Leader is now %v with %d waiters to notify", leader.Get(), len(electionWaiters))
 
 		// As an addition to the algorithm, we notify all
 		// the election waiters of the newly acquired result
 		for _, waiter := range electionWaiters {
-			go waiter(*leader)
+			waiter(leader.Get())
 		}
 
 		electionWaiters = electionWaiters[:0]
@@ -160,11 +161,11 @@ func (cre *crElector) processElections() {
 	for {
 		select {
 		// 1. Election requests, through ability updates
-		case newAbility := <-cre.newAbility:
+		case newAbility := <-cre.newAbility.Outlet():
 			// 1.a. If an election is ongoing, reschedule the request after the election
 			if inElection {
 				cre.log.Infof("Received ability update to %v during election, rescheduling after completion", newAbility.ability)
-				electionWaiters = append(electionWaiters, func(_ address) { cre.newAbility <- newAbility })
+				electionWaiters = append(electionWaiters, func(_ address) { cre.newAbility.Inlet() <- newAbility })
 				continue
 			}
 
@@ -179,7 +180,7 @@ func (cre *crElector) processElections() {
 		// 2. Leader requests from the applicative side
 		case res := <-cre.getLeader:
 			// If we have no leader, we start an election now
-			if !inElection && *leader == (address{}) {
+			if !inElection && leader.IsNone() {
 				cre.log.Info("No leader exists, initiating election in response to leader request")
 				startElection()
 			}
@@ -187,8 +188,8 @@ func (cre *crElector) processElections() {
 			// If we are not in an election, we return the leader immediately,
 			// otherwise we add the requester to the waiters list
 			if !inElection {
-				cre.log.Infof("Returning current leader %v to requester", *leader)
-				res <- *leader
+				cre.log.Infof("Returning current leader %v to requester", leader)
+				res <- leader.Get()
 			} else {
 				cre.log.Info("Election in progress, queuing leader request")
 				electionWaiters = append(electionWaiters, func(leader address) { res <- leader })
@@ -202,9 +203,9 @@ func (cre *crElector) processElections() {
 				// 3.a.i.   The leader is the participant with the highest ability
 				newLeader, highestAbility := ann.GetHighest()
 				cre.log.Infof("Announcement completed ring traversal. Highest ability is %v from %v", highestAbility, newLeader)
-				*leader = newLeader
+				leader = option.Some[address](newLeader)
 				// 3.a.ii.  Start a result loop with the leader and us as participant
-				cre.ring.SendToNext(startResult(*leader, cre.self))
+				cre.ring.SendToNext(startResult(leader.Get(), cre.self))
 				// 3.a.iii. Signal that the election is over
 				endElection()
 			} else {
@@ -225,7 +226,7 @@ func (cre *crElector) processElections() {
 			}
 
 			// 4.b. If we are not in an election, and the result leader is new
-			if !inElection && *leader != res.Leader {
+			if !inElection && (leader.IsNone() || leader.Get() != res.Leader) {
 				// 4.b.i. We need to start a new election
 				cre.log.Infof("Received result with new leader %v while not in election, starting new election", res.Leader)
 				startElection()
@@ -233,7 +234,7 @@ func (cre *crElector) processElections() {
 				// We can accept the result
 				// 4.c.i.   Update the leader
 				cre.log.Infof("Updating leader to %v and propagating result", res.Leader)
-				*leader = res.Leader
+				leader = option.Some[address](res.Leader)
 				// 4.c.ii.  Add ourselves in the participants
 				// 4.c.iii. Forward the message to the next node in the ring
 				cre.ring.SendToNext(res.WithParticipant(cre.self))

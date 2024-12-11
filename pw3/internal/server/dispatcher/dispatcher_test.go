@@ -6,6 +6,7 @@ import (
 	"chatsapp/internal/utils/ioUtils"
 	"encoding/gob"
 	"reflect"
+	"sync"
 	"testing"
 )
 
@@ -39,18 +40,24 @@ func TestRegister(t *testing.T) {
 
 	logger := logging.NewLogger(ioUtils.NewStdStream(), nil, "disp_test", false)
 	d := NewDispatcher(logger, addr1, mockNet)
+
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+
 	d.Register(MutexMessage{}, func(msg Message, source transport.Address) {
 		if _, ok := msg.(MutexMessage); !ok {
-			t.Fatalf("expected MutexMessage, got %T", msg)
+			t.Errorf("expected MutexMessage, got %T", msg)
 		}
 
-		if source != addr2 {
-			t.Fatalf("expected source %v, got %v", addr1, source)
+		if source != addr1 {
+			t.Errorf("expected source %v, got %v", addr1, source)
 		}
 
 		if !reflect.DeepEqual(msg, expectedMsg) {
-			t.Fatalf("expected message %v, got %v", expectedMsg, msg)
+			t.Errorf("expected message %v, got %v", expectedMsg, msg)
 		}
+
+		wg.Done()
 	})
 
 	go func() {
@@ -59,4 +66,6 @@ func TestRegister(t *testing.T) {
 	}()
 
 	d.Send(expectedMsg, addr2)
+
+	wg.Wait()
 }
