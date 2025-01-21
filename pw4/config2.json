@@ -1,0 +1,8 @@
+{
+    "Debug": true,
+    "LogPath": "logs/",
+    "Ring": ["127.0.0.1:5000", "127.0.0.1:5001"],
+    "DirectNeighbors": ["127.0.0.1:5000"],
+    "PrintReadAck": true,
+    "SlowdownMs": 0
+}
